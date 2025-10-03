@@ -1,0 +1,296 @@
+> # 1. ---- load packages ----
+> library(tidyverse)
+> library(survey)
+> 
+> # 2. ---- load dataset ----
+> 
+> gss <- read_csv("gss-12M0025-E-2017-c-31_F1.csv")
+Rows: 20602 Columns: 1316                                                                       
+── Column specification ────────────────────────────────────────────────────────────────────────
+Delimiter: ","
+dbl (1316): PUMFID, WGHT_PER, AGEC, AGEDC, AGEGR5, AGEGR10, SEX, MARSTAT, SEXPR, PRTYPEC, CH...
+
+ℹ Use `spec()` to retrieve the full column specification for this data.
+ℹ Specify the column types or set `show_col_types = FALSE` to quiet this message.
+> 
+> # 3. ---- look at counts ----
+> 
+> cat("\n--- Unweighted counts BEFORE cleaning ---\n")
+
+--- Unweighted counts BEFORE cleaning ---
+> print(table(gss$SLM_01, useNA = "ifany"))     # life satisfaction (0-10 + special codes)
+
+   0    1    2    3    4    5    6    7    8    9   10   97   98   99 
+  74   33   79  133  258  992 1041 3096 6213 3758 4654  131   79   61 
+> print(table(gss$FAMINCG2, useNA = "ifany"))   # income 
+
+   1    2    3    4    5    6 
+2775 4345 3696 2921 2158 4707 
+> print(table(gss$EHG3_01B, useNA = "ifany"))   # education
+
+   1    2    3    4    5    6    7   97   98   99 
+3036 4848 1483 4566  732 3753 1843   77   58  206 
+> print(table(gss$REE_03, useNA = "ifany"))     # religious attendance
+
+   1    2    3    4    5    6   97   98   99 
+5128 2807 1534  847 1112 8748  148  200   78 
+> print(table(gss$SEX, useNA = "ifany"))        # gender (1=Male, 2=Female)
+
+    1     2 
+ 9399 11203 
+> 
+> # 3. ---- remove non-responses/valid skips ----
+> na_sentry <- function(x, bad = c(96,97,98,99)) {
++   if (is.factor(x)) x <- as.numeric(as.character(x))
++   if (is.character(x)) x <- suppressWarnings(as.numeric(x))
++   x[x %in% bad] <- NA
++   x
++ }
+> 
+> 
+> # 4. ---- cleaned dataset with recoded variables ----
+> dat_clean <- gss %>%
++   select(SLM_01, FAMINCG2, EHG3_01B, REE_03, SEX,    
++          WGHT_PER, starts_with("WTBS_")) %>%
++   mutate(
++     SLM_01   = na_sentry(SLM_01),
++     FAMINCG2 = na_sentry(FAMINCG2),
++     EHG3_01B = na_sentry(EHG3_01B),
++     REE_03   = na_sentry(REE_03),
++     SEX      = na_sentry(SEX),
++     SLM_01   = as.numeric(SLM_01),
++     FAMINCG2 = factor(FAMINCG2, levels = 1:6,
++                       labels = c("< $25k", "$25–49,999", "$50–74,999",
++                                  "$75–99,999", "$100–124,999", "$125k+")) %>%
++       fct_relevel("< $25k"),
++     EHG3_01B = factor(EHG3_01B, levels = 1:7,
++                       labels = c("Less than HS", "HS diploma/equiv",
++                                  "Trade cert/diploma", "College/CEGEP non-univ",
++                                  "Univ < Bachelor", "Bachelor's", "Univ > Bachelor")) %>%
++       fct_relevel("HS diploma/equiv"),
++     REE_03   = factor(REE_03, levels = 1:6,
++                       labels = c("At least once a day","At least once a week",
++                                  "At least once a month","At least 3 times a year",
++                                  "Once or twice a year","Not at all")) %>%
++       fct_relevel("Not at all"),
++     SEX      = factor(SEX, levels = c(1, 2), labels = c("Male", "Female"))
++   ) %>%
++   filter(!is.na(SLM_01), !is.na(FAMINCG2),
++          !is.na(EHG3_01B), !is.na(REE_03), !is.na(SEX))
+> 
+> saveRDS(dat_clean, "2017_GSS_recode.Rds")
+> 
+> # 5. ---- Peek at cleaned data ----
+> count(dat_clean, FAMINCG2)
+# A tibble: 6 × 2
+  FAMINCG2         n
+  <fct>        <int>
+1 < $25k        2636
+2 $25–49,999    4136
+3 $50–74,999    3531
+4 $75–99,999    2809
+5 $100–124,999  2100
+6 $125k+        4560
+> count(dat_clean, EHG3_01B)
+# A tibble: 7 × 2
+  EHG3_01B                   n
+  <fct>                  <int>
+1 HS diploma/equiv        4741
+2 Less than HS            2922
+3 Trade cert/diploma      1448
+4 College/CEGEP non-univ  4466
+5 Univ < Bachelor          715
+6 Bachelor's              3690
+7 Univ > Bachelor         1790
+> count(dat_clean, REE_03)
+# A tibble: 6 × 2
+  REE_03                      n
+  <fct>                   <int>
+1 Not at all               8581
+2 At least once a day      5001
+3 At least once a week     2753
+4 At least once a month    1511
+5 At least 3 times a year   834
+6 Once or twice a year     1092
+> count(dat_clean, SEX)
+# A tibble: 2 × 2
+  SEX        n
+  <fct>  <int>
+1 Male    9003
+2 Female 10769
+> 
+> # 6. ---- Add packages to add replicate weights ----
+> library(survey)
+> 
+> 
+> # 7. ---- Define survey design with bootstrap replicate weights ----
+> des <- svrepdesign(
++   weights     = ~WGHT_PER,
++   repweights  = "WTBS_[0-9]+",   # matches WTBS_001 ... WTBS_500
++   type        = "bootstrap",
++   data        = dat_clean,
++   combined.weights = TRUE
++ )
+> 
+> 
+> 
+> # 8. ---- Descriptives ----
+> 
+> n_unweighted <- nrow(dat_clean)
+> n_unweighted
+[1] 19772
+> 
+> 
+> # 9. ---- Weighted mean and variance of Life satisfaction (SLM_01) ----
+> slm_mean <- svymean(~SLM_01, des, na.rm = TRUE)
+> slm_var  <- svyvar(~SLM_01, des, na.rm = TRUE)
+> 
+> slm_row <- tibble(
++   Variable = "Life satisfaction (0–10)",
++   Level    = "Mean (SD)",
++   Estimate = sprintf("%.2f (%.2f)", 
++                      as.numeric(coef(slm_mean)),
++                      sqrt(as.numeric(slm_var))),
++   CI       = sprintf("%.2f–%.2f", 
++                      confint(slm_mean)[1], 
++                      confint(slm_mean)[2])
++ )
+> 
+> # 10. ---- Define Categorical variables
+> cat_vars <- c("FAMINCG2", "EHG3_01B", "REE_03", "SEX")
+> 
+> cat_rows <- lapply(cat_vars, function(v) {
++   # weighted proportions
++   means <- svymean(as.formula(paste0("~", v)), des, na.rm = TRUE)
++   cis   <- confint(means)
++   tibble(
++     Variable = v,
++     Level    = names(coef(means)),
++     Estimate = sprintf("%.1f%%", 100 * coef(means)),
++     CI       = sprintf("%.1f–%.1f%%", 100 * cis[, 1], 100 * cis[, 2])
++   )
++ }) %>% bind_rows()
+> 
+> # 11. ---- Combine
+> descriptives_tbl <- bind_rows(slm_row, cat_rows)
+> 
+> # 12. ---- View the table ----
+> print(descriptives_tbl, n=Inf)
+# A tibble: 22 × 4
+   Variable                 Level                          Estimate    CI        
+   <chr>                    <chr>                          <chr>       <chr>     
+ 1 Life satisfaction (0–10) Mean (SD)                      8.11 (1.59) 8.08–8.14 
+ 2 FAMINCG2                 FAMINCG2< $25k                 10.3%       9.8–10.9% 
+ 3 FAMINCG2                 FAMINCG2$25–49,999             17.9%       17.3–18.6%
+ 4 FAMINCG2                 FAMINCG2$50–74,999             16.4%       15.8–17.1%
+ 5 FAMINCG2                 FAMINCG2$75–99,999             14.5%       13.9–15.2%
+ 6 FAMINCG2                 FAMINCG2$100–124,999           11.6%       11.0–12.2%
+ 7 FAMINCG2                 FAMINCG2$125k+                 29.2%       28.3–30.0%
+ 8 EHG3_01B                 EHG3_01BHS diploma/equiv       24.9%       24.1–25.7%
+ 9 EHG3_01B                 EHG3_01BLess than HS           14.5%       13.9–15.1%
+10 EHG3_01B                 EHG3_01BTrade cert/diploma     6.7%        6.3–7.1%  
+11 EHG3_01B                 EHG3_01BCollege/CEGEP non-univ 22.3%       21.5–23.1%
+12 EHG3_01B                 EHG3_01BUniv < Bachelor        3.3%        2.9–3.6%  
+13 EHG3_01B                 EHG3_01BBachelor's             19.4%       18.6–20.1%
+14 EHG3_01B                 EHG3_01BUniv > Bachelor        8.9%        8.4–9.4%  
+15 REE_03                   REE_03Not at all               44.9%       44.0–45.8%
+16 REE_03                   REE_03At least once a day      23.6%       22.8–24.4%
+17 REE_03                   REE_03At least once a week     13.4%       12.8–14.0%
+18 REE_03                   REE_03At least once a month    7.8%        7.3–8.4%  
+19 REE_03                   REE_03At least 3 times a year  4.6%        4.2–5.0%  
+20 REE_03                   REE_03Once or twice a year     5.7%        5.3–6.1%  
+21 SEX                      SEXMale                        49.3%       49.1–49.5%
+22 SEX                      SEXFemale                      50.7%       50.5–50.9%
+> 
+> # 13. ---- Bivariate analysis ----
+> 
+> # Bivariate regression: Life satisfaction ~ Income
+> m_income <- svyglm(SLM_01 ~ FAMINCG2, design = des)
+> 
+> # Regression summary
+> summary(m_income)
+
+Call:
+svyglm(formula = SLM_01 ~ FAMINCG2, design = des)
+
+Survey design:
+svrepdesign.default(weights = ~WGHT_PER, repweights = "WTBS_[0-9]+", 
+    type = "bootstrap", data = dat_clean, combined.weights = TRUE)
+
+Coefficients:
+                     Estimate Std. Error t value Pr(>|t|)    
+(Intercept)           7.54444    0.05271 143.134  < 2e-16 ***
+FAMINCG2$25–49,999    0.37757    0.06196   6.094 2.23e-09 ***
+FAMINCG2$50–74,999    0.53784    0.06301   8.536  < 2e-16 ***
+FAMINCG2$75–99,999    0.61353    0.06378   9.619  < 2e-16 ***
+FAMINCG2$100–124,999  0.78455    0.06791  11.553  < 2e-16 ***
+FAMINCG2$125k+        0.76936    0.05844  13.166  < 2e-16 ***
+---
+Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+
+(Dispersion parameter for gaussian family taken to be 2.471588)
+
+Number of Fisher Scoring iterations: 2
+
+> 
+> # Wald test for overall significance of income
+> regTermTest(m_income, ~FAMINCG2)
+Wald test for FAMINCG2
+ in svyglm(formula = SLM_01 ~ FAMINCG2, design = des)
+F =  45.9974  on  5  and  494  df: p= < 2.22e-16 
+> 
+> 
+> # ---- Run regression: Life satisfaction ~ income + education + religion ----
+> m_boot <- svyglm(
++   SLM_01 ~ FAMINCG2 + EHG3_01B + REE_03 + SEX,
++   design = des
++ )
+> 
+> # ---- Results ----
+> summary(m_boot)
+
+Call:
+svyglm(formula = SLM_01 ~ FAMINCG2 + EHG3_01B + REE_03 + SEX, 
+    design = des)
+
+Survey design:
+svrepdesign.default(weights = ~WGHT_PER, repweights = "WTBS_[0-9]+", 
+    type = "bootstrap", data = dat_clean, combined.weights = TRUE)
+
+Coefficients:
+                               Estimate Std. Error t value Pr(>|t|)    
+(Intercept)                     7.38218    0.06568 112.390  < 2e-16 ***
+FAMINCG2$25–49,999              0.37882    0.06207   6.103 2.14e-09 ***
+FAMINCG2$50–74,999              0.55468    0.06371   8.707  < 2e-16 ***
+FAMINCG2$75–99,999              0.63914    0.06392   9.999  < 2e-16 ***
+FAMINCG2$100–124,999            0.81377    0.06983  11.654  < 2e-16 ***
+FAMINCG2$125k+                  0.80246    0.05966  13.451  < 2e-16 ***
+EHG3_01BLess than HS            0.20141    0.05558   3.624 0.000321 ***
+EHG3_01BTrade cert/diploma      0.13735    0.05629   2.440 0.015040 *  
+EHG3_01BCollege/CEGEP non-univ  0.06029    0.04442   1.357 0.175323    
+EHG3_01BUniv < Bachelor         0.21931    0.08024   2.733 0.006505 ** 
+EHG3_01BBachelor's              0.06330    0.04530   1.398 0.162892    
+EHG3_01BUniv > Bachelor         0.06869    0.05722   1.201 0.230521    
+REE_03At least once a day       0.09347    0.03892   2.401 0.016719 *  
+REE_03At least once a week      0.07394    0.04341   1.703 0.089160 .  
+REE_03At least once a month     0.04224    0.05637   0.749 0.454071    
+REE_03At least 3 times a year  -0.08232    0.07736  -1.064 0.287846    
+REE_03Once or twice a year     -0.03359    0.06199  -0.542 0.588144    
+SEXFemale                       0.07000    0.03231   2.166 0.030768 *  
+---
+Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+
+(Dispersion parameter for gaussian family taken to be 2.462851)
+
+Number of Fisher Scoring iterations: 2
+
+> 
+> 
+> # Wald score for model 
+> 
+> regTermTest(m_boot, ~FAMINCG2 + EHG3_01B + REE_03)
+Wald test for FAMINCG2 EHG3_01B REE_03
+ in svyglm(formula = SLM_01 ~ FAMINCG2 + EHG3_01B + REE_03 + SEX, 
+    design = des)
+F =  17.22004  on  16  and  482  df: p= < 2.22e-16 
+>
